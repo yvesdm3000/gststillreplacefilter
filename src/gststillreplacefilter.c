@@ -313,7 +313,17 @@ static GstBuffer* getNextReplaceBuffer( GstStillReplaceFilter* filter )
 {
   GstBuffer* ret = NULL;
   g_mutex_lock( &filter->replacesinkMutex );
-  while ((filter->nextReplaceBuffer == NULL)&&(!filter->eos)&&(!filter->flushing)) {
+  if ( !gst_pad_is_linked( filter->replacesinkpad) )
+  {
+    if (filter->nextReplaceBuffer)
+    {
+      ret = gst_buffer_ref( filter->nextReplaceBuffer );
+    }
+    g_mutex_unlock( &filter->replacesinkMutex );
+    return ret;
+  }
+  while ((filter->nextReplaceBuffer == NULL)&&(!filter->eos)&&(!filter->flushing))
+  {
     g_cond_wait( &filter->replacesinkEvent, &filter->replacesinkMutex );
   }
   ret = filter->nextReplaceBuffer;
@@ -359,7 +369,7 @@ stillreplacefilter_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
     g_print("replacing refImageBuffer\n");
     gst_buffer_replace( &filter->refImageBuffer, buf );
   }
-  else
+  else if (filter->psnr > 0)
   {
     // Compare frame
     GstVideoFrame refFrame;
@@ -425,8 +435,6 @@ stillreplacefilter_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
         g_print("mapping srcFrame failed\n");
       }
       gst_buffer_unref( replaceBuffer );
-    } else {
-      g_print("No replacebuffer...\n");
     }
   }
 //  g_print ("pushing to pad\n");
