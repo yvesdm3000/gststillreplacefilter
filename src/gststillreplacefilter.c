@@ -287,7 +287,9 @@ stillreplacefilter_sink_event (GstPad * pad, GstObject * parent, GstEvent * even
       {
         return FALSE;
       }
+      g_mutex_lock (&filter->replacesinkMutex);
       filter->sink_info = info;
+      g_mutex_unlock (&filter->replacesinkMutex);
 
       /* and forward */
       ret = gst_pad_event_default (pad, parent, event);
@@ -408,13 +410,12 @@ stillreplacefilter_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
     }
   }
   if (replace) {
-    // We just clear it for now
     buf = gst_buffer_make_writable(buf);
     GstBuffer* replaceBuffer = getNextReplaceBuffer( filter );
     if (replaceBuffer)
     {
       GstVideoFrame srcFrame;
-      if (gst_video_frame_map (&srcFrame, &filter->sink_info, replaceBuffer, GST_MAP_READ))
+      if (gst_video_frame_map (&srcFrame, &filter->replacesink_info, replaceBuffer, GST_MAP_READ))
       {
         GstVideoFrame destFrame;
         if (gst_video_frame_map (&destFrame, &filter->sink_info, buf, GST_MAP_WRITE))
@@ -423,8 +424,20 @@ stillreplacefilter_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
           for ( int plane=0; plane<planes; ++plane)
           {
             guint8 *pData = GST_VIDEO_FRAME_PLANE_DATA(&destFrame, plane);
-            const guint8 *pSrcData = GST_VIDEO_FRAME_PLANE_DATA(&srcFrame, plane);
-            memcpy (pData, pSrcData, GST_VIDEO_FRAME_COMP_HEIGHT(&destFrame, 0) * GST_VIDEO_FRAME_PLANE_STRIDE(&destFrame, plane) );
+            int height = GST_VIDEO_FRAME_COMP_HEIGHT(&destFrame,0);
+            if (height > GST_VIDEO_FRAME_COMP_HEIGHT(&srcFrame,0))
+              height = GST_VIDEO_FRAME_COMP_HEIGHT(&srcFrame,0);
+            int stride = GST_VIDEO_FRAME_PLANE_STRIDE(&destFrame, plane);
+            if (stride > GST_VIDEO_FRAME_PLANE_STRIDE(&srcFrame, plane))
+              stride = GST_VIDEO_FRAME_PLANE_STRIDE(&srcFrame, plane);
+            guint8 *pSrcData = GST_VIDEO_FRAME_PLANE_DATA(&srcFrame, plane);
+            //memcpy (pData, pSrcData, GST_VIDEO_FRAME_COMP_HEIGHT(&destFrame, 0) * GST_VIDEO_FRAME_PLANE_STRIDE(&destFrame, plane) );
+            for ( int line = 0; line < height; ++line )
+            {
+              memcpy( pData, pSrcData, stride );
+              pData += GST_VIDEO_FRAME_PLANE_STRIDE(&destFrame, plane);
+              pSrcData += GST_VIDEO_FRAME_PLANE_STRIDE(&srcFrame, plane);
+            }
           }
           gst_video_frame_unmap( &destFrame );
         } else {
@@ -450,14 +463,55 @@ stillreplacefilter_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
     g_cond_broadcast( &filter->replacesinkEvent );
     g_mutex_unlock (&filter->replacesinkMutex);
   }
+  if (ret == GST_FLOW_ERROR) {
+    g_mutex_lock (&filter->replacesinkMutex);
+    g_cond_broadcast( &filter->replacesinkEvent );
+    g_mutex_unlock (&filter->replacesinkMutex);
+  }
   return ret;
 }
 
 static gboolean
 stillreplacefilter_replacepad_sink_event (GstPad * pad, GstObject * parent, GstEvent * event)
 {
-  gboolean ret = gst_pad_event_default (pad, parent, event);
+  GstStillReplaceFilter *filter = GST_STILLREPLACEFILTER (parent);
+  gboolean ret;
+
   g_print("%s %s\n", __PRETTY_FUNCTION__, GST_EVENT_TYPE_NAME(event));
+  GST_LOG_OBJECT (filter, "Replacesink: Received %s event: %" GST_PTR_FORMAT, GST_EVENT_TYPE_NAME (event), event);
+
+  switch (GST_EVENT_TYPE (event)) {
+    case GST_EVENT_CAPS:
+    {
+      GstCaps * caps;
+      GstVideoInfo info;
+
+      gst_event_parse_caps (event, &caps);
+      /* do something with the caps */
+      if (!gst_video_info_from_caps (&info, caps))
+      {
+        return FALSE;
+      }
+      g_mutex_lock (&filter->replacesinkMutex);
+      filter->replacesink_info = info;
+      g_mutex_unlock (&filter->replacesinkMutex);
+
+      /* and forward */
+      ret = gst_pad_event_default (pad, parent, event);
+      break;
+    }
+    case GST_EVENT_EOS:
+    {
+      g_mutex_lock (&filter->replacesinkMutex);
+      g_cond_broadcast( &filter->replacesinkEvent );
+      g_mutex_unlock (&filter->replacesinkMutex);
+      ret = gst_pad_event_default (pad, parent, event);
+      break;
+    }
+    default:
+      ret = gst_pad_event_default (pad, parent, event);
+      break;
+  }
   return ret;
 }
 static GstFlowReturn
@@ -471,11 +525,13 @@ stillreplacefilter_replacepad_chain (GstPad * pad, GstObject * parent, GstBuffer
   g_mutex_lock (&filter->replacesinkMutex);
 
   if (filter->eos) {
+    g_cond_broadcast( &filter->replacesinkEvent );
     g_mutex_unlock (&filter->replacesinkMutex);
     gst_buffer_unref( buf );
     return GST_FLOW_EOS;
   }
   if (filter->flushing) {
+    g_cond_broadcast( &filter->replacesinkEvent );
     g_mutex_unlock (&filter->replacesinkMutex);
     gst_buffer_unref( buf );
     return GST_FLOW_FLUSHING;

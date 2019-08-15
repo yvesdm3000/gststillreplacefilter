@@ -73,6 +73,7 @@ struct _GstStillReplaceFilter
 
   GstPad *sinkpad, *srcpad, *replacesinkpad;
   GstVideoInfo sink_info;
+  GstVideoInfo replacesink_info;
 
   gboolean eos;
   gboolean flushing;
