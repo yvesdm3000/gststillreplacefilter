@@ -135,8 +135,6 @@ stillreplacefilter_class_init (GstStillReplaceFilterClass * klass)
   GObjectClass *gobject_class;
   GstElementClass *gstelement_class;
 
-  fprintf(stdout,"%s\n", __PRETTY_FUNCTION__);
-
   gobject_class = (GObjectClass *) klass;
   gstelement_class = (GstElementClass *) klass;
 
@@ -175,7 +173,6 @@ stillreplacefilter_class_init (GstStillReplaceFilterClass * klass)
 static void
 stillreplacefilter_init (GstStillReplaceFilter * filter)
 {
-  fprintf(stdout,"%s\n", __PRETTY_FUNCTION__);
   g_mutex_init (&filter->replacesinkMutex);
   g_cond_init (&filter->replacesinkEvent);
 
@@ -224,7 +221,6 @@ stillreplacefilter_set_property (GObject * object, guint prop_id,
     const GValue * value, GParamSpec * pspec)
 {
   GstStillReplaceFilter *filter = GST_STILLREPLACEFILTER (object);
-  fprintf(stdout,"%s\n", __PRETTY_FUNCTION__);
 
   switch (prop_id) {
     case PROP_SILENT:
@@ -246,12 +242,17 @@ static void
 stillreplacefilter_get_property (GObject * object, guint prop_id,
     GValue * value, GParamSpec * pspec)
 {
-  fprintf(stdout,"%s\n", __PRETTY_FUNCTION__);
   GstStillReplaceFilter *filter = GST_STILLREPLACEFILTER (object);
 
   switch (prop_id) {
     case PROP_SILENT:
       g_value_set_boolean (value, filter->silent);
+      break;
+    case PROP_COMPARELINES:
+      g_value_set_uint (value, filter->compare_lines);
+      break;
+    case PROP_PSNR:
+      g_value_set_uint (value, filter->psnr);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -266,7 +267,6 @@ stillreplacefilter_get_property (GObject * object, guint prop_id,
 static gboolean
 stillreplacefilter_sink_event (GstPad * pad, GstObject * parent, GstEvent * event)
 {
-  fprintf(stdout,"%s %s\n", __PRETTY_FUNCTION__, GST_EVENT_TYPE_NAME(event));
   GstStillReplaceFilter *filter;
   gboolean ret;
 
