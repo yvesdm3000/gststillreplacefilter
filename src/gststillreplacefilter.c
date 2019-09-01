@@ -101,7 +101,7 @@ static GstStaticPadTemplate sink_factory = GST_STATIC_PAD_TEMPLATE ("sink",
 
 static GstStaticPadTemplate replacesink_factory = GST_STATIC_PAD_TEMPLATE ("replacesink",
     GST_PAD_SINK,
-    GST_PAD_ALWAYS,
+    GST_PAD_SOMETIMES,
     GST_STATIC_CAPS (VIDEO_STILLREPLACE_CAPS)
     );
 
@@ -290,6 +290,8 @@ stillreplacefilter_sink_event (GstPad * pad, GstObject * parent, GstEvent * even
       g_mutex_lock (&filter->replacesinkMutex);
       filter->sink_info = info;
       g_mutex_unlock (&filter->replacesinkMutex);
+
+      gst_pad_set_caps( filter->replacesinkpad, caps );
 
       /* and forward */
       ret = gst_pad_event_default (pad, parent, event);
