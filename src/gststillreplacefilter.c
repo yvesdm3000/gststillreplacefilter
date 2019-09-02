@@ -82,7 +82,8 @@ enum
   PROP_0,
   PROP_SILENT,
   PROP_COMPARELINES,
-  PROP_PSNR
+  PROP_PSNR,
+  PROP_RESAMPLE
 };
 
 /* the capabilities of the inputs and outputs.
@@ -146,10 +147,13 @@ stillreplacefilter_class_init (GstStillReplaceFilterClass * klass)
           TRUE, G_PARAM_READWRITE));
   g_object_class_install_property (gobject_class, PROP_COMPARELINES,
       g_param_spec_uint ("compare_lines", "Compare lines", "Amount of lines to compare",
-          0, 32000, 0, G_PARAM_READWRITE | GST_PARAM_CONTROLLABLE));
+          0, 32000, 0, G_PARAM_READWRITE | GST_PARAM_CONTROLLABLE | GST_PARAM_MUTABLE_PLAYING));
   g_object_class_install_property (gobject_class, PROP_PSNR,
       g_param_spec_uint ("psnr", "Peak Signal to Noise Ratio", "Peak Signal to Noise Ratio: Higher value: less allowed difference [0-255].",
-          0, 255, 100, G_PARAM_READWRITE | GST_PARAM_CONTROLLABLE));
+          0, 255, 100, G_PARAM_READWRITE | GST_PARAM_CONTROLLABLE | GST_PARAM_MUTABLE_PLAYING));
+  g_object_class_install_property (gobject_class, PROP_RESAMPLE,
+      g_param_spec_boolean ("resample", "Resample", "Resample reference image from input",
+          TRUE, G_PARAM_READWRITE | GST_PARAM_CONTROLLABLE | GST_PARAM_MUTABLE_PLAYING));
 
   gst_element_class_set_details_simple(gstelement_class,
     "Still replace filter",
@@ -222,15 +226,25 @@ stillreplacefilter_set_property (GObject * object, guint prop_id,
 {
   GstStillReplaceFilter *filter = GST_STILLREPLACEFILTER (object);
 
-  switch (prop_id) {
+  switch (prop_id)
+  {
     case PROP_SILENT:
+      GST_OBJECT_LOCK(filter);
       filter->silent = g_value_get_boolean (value);
+      GST_OBJECT_UNLOCK(filter);
       break;
     case PROP_COMPARELINES:
+      GST_OBJECT_LOCK(filter);
       filter->compare_lines = g_value_get_uint (value);
+      GST_OBJECT_UNLOCK(filter);
       break;
     case PROP_PSNR:
+      GST_OBJECT_LOCK(filter);
       filter->psnr = g_value_get_uint (value);
+      GST_OBJECT_UNLOCK(filter);
+      break;
+    case PROP_RESAMPLE:
+      gst_buffer_replace( &filter->refImageBuffer, NULL );
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -246,13 +260,19 @@ stillreplacefilter_get_property (GObject * object, guint prop_id,
 
   switch (prop_id) {
     case PROP_SILENT:
+      GST_OBJECT_LOCK(filter);
       g_value_set_boolean (value, filter->silent);
+      GST_OBJECT_UNLOCK(filter);
       break;
     case PROP_COMPARELINES:
+      GST_OBJECT_LOCK(filter);
       g_value_set_uint (value, filter->compare_lines);
+      GST_OBJECT_UNLOCK(filter);
       break;
     case PROP_PSNR:
+      GST_OBJECT_LOCK(filter);
       g_value_set_uint (value, filter->psnr);
+      GST_OBJECT_UNLOCK(filter);
       break;
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -287,9 +307,9 @@ stillreplacefilter_sink_event (GstPad * pad, GstObject * parent, GstEvent * even
       {
         return FALSE;
       }
-      g_mutex_lock (&filter->replacesinkMutex);
+      GST_OBJECT_LOCK(filter);
       filter->sink_info = info;
-      g_mutex_unlock (&filter->replacesinkMutex);
+      GST_OBJECT_UNLOCK(filter);
 
       if (!gst_pad_set_caps( filter->replacesinkpad, caps )) {
         GST_ERROR_OBJECT( filter, "Caps negotiation failed: Replacesink pad must allow the same caps as the main sink");
@@ -367,8 +387,16 @@ stillreplacefilter_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
 
   filter = GST_STILLREPLACEFILTER (parent);
 
+  GstBuffer* refImageBuffer = NULL;
+  GST_OBJECT_LOCK( filter );
+  if (filter->refImageBuffer) 
+  {
+    refImageBuffer = gst_buffer_ref(filter->refImageBuffer);
+  }
+  GST_OBJECT_UNLOCK( filter );
+
   gboolean replace = FALSE;
-  if (!filter->refImageBuffer)
+  if (!refImageBuffer)
   {
     if (filter->silent == FALSE)
       GST_INFO("replacing refImageBuffer\n");
@@ -378,17 +406,19 @@ stillreplacefilter_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
   {
     // Compare frame
     GstVideoFrame refFrame;
-    if (gst_video_frame_map (&refFrame, &filter->sink_info, filter->refImageBuffer, GST_MAP_READ))
+    if (gst_video_frame_map (&refFrame, &filter->sink_info, refImageBuffer, GST_MAP_READ))
     {
       GstVideoFrame frame;
       if (gst_video_frame_map (&frame, &filter->sink_info, buf, GST_MAP_READ))
       {
         guint lines = filter->compare_lines;
-        if ((lines == 0)||(lines > filter->sink_info.height)){
+        if ((lines == 0)||(lines > filter->sink_info.height))
+        {
           lines = filter->sink_info.height;
         }
         int planes = GST_VIDEO_FRAME_N_PLANES(&refFrame);
-        if (planes > GST_VIDEO_FRAME_N_PLANES(&frame) ){
+        if (planes > GST_VIDEO_FRAME_N_PLANES(&frame) )
+        {
           planes = GST_VIDEO_FRAME_N_PLANES(&frame);
         }
         for ( int plane=0; plane<planes && replace == FALSE; ++plane)
@@ -402,7 +432,8 @@ stillreplacefilter_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
             double val = psnr( mse );
             if (filter->silent == FALSE )
               GST_INFO("psnr: %f  \n", val);
-            if (val > (double)filter->psnr) {
+            if (val > (double)filter->psnr)
+            {
               replace = TRUE;
             }
           }
@@ -412,7 +443,8 @@ stillreplacefilter_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
       gst_video_frame_unmap( &refFrame );
     }
   }
-  if (replace) {
+  if (replace)
+  {
     buf = gst_buffer_make_writable(buf);
     GstBuffer* replaceBuffer = getNextReplaceBuffer( filter );
     if (replaceBuffer)
@@ -443,11 +475,15 @@ stillreplacefilter_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
             }
           }
           gst_video_frame_unmap( &destFrame );
-        } else {
+        }
+        else
+        {
           GST_ERROR_OBJECT(filter, "mapping destFrame failed\n");
         }
         gst_video_frame_unmap( &srcFrame );
-      } else {
+      }
+      else
+      {
         GST_ERROR_OBJECT(filter, "mapping srcFrame failed\n");
       }
       gst_buffer_unref( replaceBuffer );
@@ -459,16 +495,22 @@ stillreplacefilter_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
     if (ret != GST_FLOW_OK )
       GST_INFO("%s done ret=%d\n", __PRETTY_FUNCTION__, ret);
   }
-  if (ret == GST_FLOW_FLUSHING) {
+  if (ret == GST_FLOW_FLUSHING)
+  {
     g_mutex_lock (&filter->replacesinkMutex);
     filter->flushing = TRUE; 
     g_cond_broadcast( &filter->replacesinkEvent );
     g_mutex_unlock (&filter->replacesinkMutex);
   }
-  if (ret == GST_FLOW_ERROR) {
+  if (ret == GST_FLOW_ERROR)
+  {
     g_mutex_lock (&filter->replacesinkMutex);
     g_cond_broadcast( &filter->replacesinkEvent );
     g_mutex_unlock (&filter->replacesinkMutex);
+  }
+  if (refImageBuffer) 
+  {
+    gst_buffer_unref( refImageBuffer );
   }
   return ret;
 }
@@ -481,7 +523,8 @@ stillreplacefilter_replacepad_sink_event (GstPad * pad, GstObject * parent, GstE
 
   GST_LOG_OBJECT (filter, "Replacesink: Received %s event: %" GST_PTR_FORMAT, GST_EVENT_TYPE_NAME (event), event);
 
-  switch (GST_EVENT_TYPE (event)) {
+  switch (GST_EVENT_TYPE (event))
+  {
     case GST_EVENT_CAPS:
     {
       GstCaps * caps;
@@ -493,9 +536,9 @@ stillreplacefilter_replacepad_sink_event (GstPad * pad, GstObject * parent, GstE
       {
         return FALSE;
       }
-      g_mutex_lock (&filter->replacesinkMutex);
+      GST_OBJECT_LOCK(filter);
       filter->replacesink_info = info;
-      g_mutex_unlock (&filter->replacesinkMutex);
+      GST_OBJECT_UNLOCK(filter);
 
       /* and forward */
       ret = gst_pad_event_default (pad, parent, event);
@@ -524,13 +567,15 @@ stillreplacefilter_replacepad_chain (GstPad * pad, GstObject * parent, GstBuffer
   filter = GST_STILLREPLACEFILTER (parent);
   g_mutex_lock (&filter->replacesinkMutex);
 
-  if (filter->eos) {
+  if (filter->eos)
+  {
     g_cond_broadcast( &filter->replacesinkEvent );
     g_mutex_unlock (&filter->replacesinkMutex);
     gst_buffer_unref( buf );
     return GST_FLOW_EOS;
   }
-  if (filter->flushing) {
+  if (filter->flushing)
+  {
     g_cond_broadcast( &filter->replacesinkEvent );
     g_mutex_unlock (&filter->replacesinkMutex);
     gst_buffer_unref( buf );
@@ -539,16 +584,23 @@ stillreplacefilter_replacepad_chain (GstPad * pad, GstObject * parent, GstBuffer
 
   while ( (filter->nextReplaceBuffer != NULL)&&(!filter->eos)&&(!filter->flushing) )
     g_cond_wait( &filter->replacesinkEvent, &filter->replacesinkMutex );
-  if (filter->eos) {
+  if (filter->eos)
+  {
     ret = GST_FLOW_EOS;
-  } else if (filter->flushing) {
-    if (filter->nextReplaceBuffer) {
+  }
+  else if (filter->flushing)
+  {
+    if (filter->nextReplaceBuffer)
+    {
       gst_buffer_unref( filter->nextReplaceBuffer );
     }
     filter->nextReplaceBuffer = NULL;
     ret = GST_FLOW_FLUSHING;
-  } else {
-    if (filter->nextReplaceBuffer) {
+  }
+  else
+  {
+    if (filter->nextReplaceBuffer)
+    {
       gst_buffer_unref( filter->nextReplaceBuffer );
     }
     filter->nextReplaceBuffer = buf;
